@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WikiLibrary Live</title>
+<style>
+  html,body{margin:0;height:100%;background:#222;color:#e9ecf5;font:14px/1.3 system-ui}
+  #ui{position:fixed;inset:0 0 auto 0;display:flex;gap:12px;align-items:center;
+      padding:8px 12px;background:rgba(10,16,36,.8);backdrop-filter:blur(6px);z-index:10}
+  #ui>*{font:12px system-ui}
+  #log{position:fixed;right:8px;bottom:8px;max-width:40ch;max-height:40vh;overflow:auto;
+       font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bcd}
+  canvas{display:block;margin:0 auto;max-width:100vw;height:auto;background:#000}
+  .pill{padding:2px 6px;border-radius:999px;background:#203060;color:#cfe}
+</style>
+
+<body>
+<div id="ui">
+  <span class="pill" id="status">connecting…</span>
+  <label>Project
+    <select id="project">
+      <option value="en.wikipedia.org" selected>en.wikipedia.org</option>
+      <option value="">(all)</option>
+    </select>
+  </label>
+  <label>Sample 1/N <input id="sampleN" type="number" value="1" min="1" style="width:56px"></label>
+  <label><input id="onlyEdits" type="checkbox" checked> Only edits</label>
+  <label><input id="showGrid" type="checkbox"> Show grid</label>
+  <button id="pause">Pause</button>
+</div>
+<br>
+<br>
+<br>
+<canvas id="c" width="1538" height="855"></canvas>
+<!-- <pre id="log"></pre> -->
+
+<script>
+/* =======================
+   CONFIG: assets & grid
+   ======================= */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+// Choose the Teahouse cell (col,row). Change to taste.
+const TEAHOUSE_CELL = { col: 1, row: 3 }; // zero-indexed in your 4×4 grid
+const TEAHOUSE_URL  = 'https://en.wikipedia.org/wiki/Wikipedia:Teahouse';
+
+const ASSETS = {
+  background: { src: 'fantasy_library_bg.png' },   // <-- set to your background
+  // Robot sprite sheet (your cute bot)
+  robot: {
+    img: { src: 'robot_sprite_sheet.png' },
+    frames: {
+      back: [ {x: 0,   y:0, w:221, h:277}, {x:221, y:0, w:221, h:277} ],
+      side: [ {x: 442, y:0, w:221, h:277}, {x:663, y:0, w:220, h:277} ],
+      scale: 0.2
+    }
+  },
+  // Human Wikipedian sprite sheet (your elf librarian)
+  human: {
+    img: { src: 'wikipedian_sprite_sheet.png' },   // <-- set to your human sheet
+    frames: {
+      // widths sum to 883: 221 + 221 + 221 + 220
+      side:  [ {x:   0, y:0, w:221, h:461}, {x: 221, y:0, w:221, h:461} ],
+      back:  [ {x: 442, y:0, w:221, h:461}, {x: 663, y:0, w:221, h:461} ], // duplicate for a 2-frame loop
+      scale: 0.2
+    }
+  },
+  // Optional: tall ladder sprite (from your sheet); if omitted, we’ll draw a simple ladder
+  ladder: {
+    img: { src: 'ladder.png' },   // <-- set to your ladder
+    frames: {
+      side: [ {x: 0, y: 0, w: 222, h: 461}, {x: 0, y: 0, w: 222, h: 461} ],
+      front:[ {x: 666, y: 0, w: 222, h: 461}, {x: 0, y: 0, w: 222, h: 461} ],
+      back: [ {x: 444, y: 0, w: 222, h: 461}, {x: 0, y: 0, w: 222, h: 461} ],
+      scale: 0.17
+    }
+  },};
+
+// Canvas/grid target geometry (tweak to align with background shelves)
+const GRID = {
+  cols: 4,
+  rows: 4,
+  // Outer margins (px) from canvas edges to begin the 4×4 shelves grid
+  margin: { left: 90, right: 90, top: 110, bottom: 120 },
+  // Padding inside each shelf cell before placing a book “column/row”
+  shelfPad: { x: 40, y: 40 },  // move the notional book area away from frames
+  // Within each shelf, the book stack area width/height (auto-computed)
+};
+
+// Animation speeds (px/sec); tweak to taste
+const SPEEDS = {
+  walk: 100,
+  climb: 100,
+  exit: 100
+};
+
+// Event stream sampling & rules
+const RULES = {
+  maxActors: 10,          // cap concurrent librarians
+  holdTimeMs: 3000,       // time to “edit” at shelf before exiting
+  namespace: '0'          // article namespace
+};
+
+// Convert DOM click coords to canvas coords (handles CSS scaling)
+function toCanvasXY(evt){
+  const b = canvas.getBoundingClientRect();
+  const x = (evt.clientX - b.left) * (canvas.width  / b.width);
+  const y = (evt.clientY - b.top)  * (canvas.height / b.height);
+  return {x,y};
+}
+
+// Return topmost (last drawn) hit target under pointer
+function getClickTarget(px,py){
+  for (let i = state.actors.length - 1; i >= 0; i--){
+    const a = state.actors[i];
+    if (a.titleRect && ptInRect(px,py,a.titleRect)) return { kind:'article', actor:a };
+    if (a.actorRect && ptInRect(px,py,a.actorRect)) return { kind:'user', actor:a };
+  }
+  return null;
+}
+
+// Pointer affordance + click
+canvas.addEventListener('mousemove', (ev)=>{
+  const p = toCanvasXY(ev);
+  const tgt = getClickTarget(p.x, p.y);
+  canvas.style.cursor = tgt ? 'pointer' : '';
+});
+canvas.addEventListener('click', (ev)=>{
+  const p = toCanvasXY(ev);
+  const tgt = getClickTarget(p.x, p.y);
+  if (!tgt) return;
+  const a = tgt.actor;
+  if (tgt.kind === 'article'){
+    const url = `https://${a.wikiHost}/wiki/${encodeURIComponent(a.title.replace(/ /g,'_'))}`;
+    window.open(url, '_blank', 'noopener');
+  } else {
+    const u = a.rawUser;
+    const url = isIPUser(u)
+      ? `https://${a.wikiHost}/wiki/Special:Contributions/${encodeURIComponent(u)}`
+      : `https://${a.wikiHost}/wiki/User:${encodeURIComponent(u)}`;
+    window.open(url, '_blank', 'noopener');
+  }
+});
+
+/* =======================
+   Placement & visual offsets
+   ======================= */
+// Hard nudges so feet hit the floor line nicely and ladder sits right
+const OFFSETS = {
+  robot: { x: 0, y: 0 },   // +y nudges down
+  human: { x: 0, y: 0 },
+  ladder: { x: -3, topHeadroom: 10, sideGap: 18 } // small tweaks for look
+};
+
+// const logEl = document.getElementById('log');
+// function logLine(s){ logEl.textContent = (s + '\n' + logEl.textContent).slice(0, 4000); }
+
+
+
+// Build 20 non-touching rectangles (4 rows × 5 cols) inside the canvas
+// Each rect has inner padding to keep stacks off its edges
+const LOCATIONS = (() => {
+  const COLS = 5, ROWS = 4;
+  const margin = { left: 0, right: 0, top: 0, bottom: 0 };
+  const pad = { x: 70, y: 70 };   // inner padding within each rect
+  const w = canvas.width, h = canvas.height;
+  const innerW = w - margin.left - margin.right;
+  const innerH = h - margin.top - margin.bottom;
+  const cellW = innerW / COLS;
+  const cellH = innerH / ROWS;
+
+  const rects = [];
+  for (let r=0; r<ROWS; r++){
+    for (let c=0; c<COLS; c++){
+      const x = margin.left + c*cellW;
+      const y = margin.top  + r*cellH;
+      rects.push({
+        x, y, w: cellW, h: cellH,
+        inner: { x: x + pad.x, y: y + pad.y, w: cellW - 2*pad.x, h: cellH - 2*pad.y }
+      });
+    }
+  }
+  return rects; // length 20
+})();
+
+/* =======================
+   Helpers
+   ======================= */
+
+function loadImage(src){
+  return new Promise((res,rej)=>{
+    const img = new Image();
+    img.onload = ()=>res(img);
+    img.onerror = rej;
+    img.src = src;
+  });
+}
+
+// Simple hash → 32-bit int (for deterministic shelf placement per title)
+function hash32(str){
+  let h = 2166136261 >>> 0;
+  for (let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+// From 0..1 seeded
+function seededUnit(rand32){ return (rand32 % 100000) / 100000; }
+
+function lerp(a,b,t){ return a + (b-a)*t; }
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+function isIPUser(u){
+  // IPv4 or IPv6-ish (loose but fine for display)
+  return typeof u === 'string' && (/^\d{1,3}(\.\d{1,3}){3}$/.test(u) || u.includes(':'));
+}
+
+/* =======================
+   Layout calculations
+   ======================= */
+function computeGrid(){
+  const w = canvas.width, h = canvas.height;
+  const innerW = w - GRID.margin.left - GRID.margin.right;
+  const innerH = h - GRID.margin.top - GRID.margin.bottom;
+  const cellW = innerW / GRID.cols;
+  const cellH = innerH / GRID.rows;
+  return { w, h, innerW, innerH, cellW, cellH };
+}
+function shelfRect(col,row){
+  const g = computeGrid();
+  const x0 = GRID.margin.left + col*g.cellW;
+  const y0 = GRID.margin.top  + row*g.cellH;
+  return { x: x0, y: y0, w: g.cellW, h: g.cellH };
+}
+// A semi-permanent per-title location: pick shelf (col,row) and local (u,v) 0..1 inside shelf
+// Semi-permanent per-title location: pick one of the 20 rects, then uniform inside it
+function pickArticleSlot(title){
+  const h = hash32(title);
+  const rectIndex = h % LOCATIONS.length;      // sticky rectangle choice (0..19)
+  const rx = seededUnit(h >>> 7);              // 0..1
+  const ry = seededUnit(h >>> 13);             // 0..1
+
+  const R = LOCATIONS[rectIndex].inner;
+  const x = R.x + rx * R.w;
+  const y = R.y + ry * R.h;
+
+  // Row 0..3 for floor line based on which row this rect is in (5 columns)
+  const row = Math.floor(rectIndex / 5);
+  return { rectIndex, row, x, y };
+}
+
+function floorYForShelfRow(row){ // 0 (top) .. 3 (bottom)
+  const h = canvas.height;
+  // Four “floors” spaced evenly; lift slightly so feet aren't clipped
+  const bottom = ((row + 1) / 4) * h;
+  return bottom - 20;
+}
+
+function sliceStrip(img, cols){
+  const baseW = Math.floor(img.width / cols);
+  const widths = Array(cols).fill(baseW);
+  widths[cols - 1] = img.width - baseW * (cols - 1); // last frame eats remainder
+  let x = 0;
+  const rects = [];
+  for (let i = 0; i < cols; i++){
+    rects.push({ x, y: 0, w: widths[i], h: img.height });
+    x += widths[i];
+  }
+  return rects;
+}
+
+// ---- rounded rect path
+function roundRectPath(ctx, x, y, w, h, r){
+  const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x,     y + h, rr);
+  ctx.arcTo(x,     y + h, x,     y,     rr);
+  ctx.arcTo(x,     y,     x + w, y,     rr);
+  ctx.closePath();
+}
+
+// ---- simple word-wrapping (monospace-ish UI font is fine for this)
+function wrapLines(ctx, text, maxWidth){
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let line = '';
+  for (const w of words){
+    const test = line ? (line + ' ' + w) : w;
+    if (ctx.measureText(test).width <= maxWidth){
+      line = test;
+    } else {
+      if (line) lines.push(line);
+      line = w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+// ---- draw the title badge and return its hitbox
+function drawTitleBadge(text, x, y, side, opts={}){
+  // side: 'left' or 'right'; (x,y) is the TOP-LEFT corner if side==='left',
+  // otherwise it's the TOP-LEFT of a box placed to the right of anchor.
+  const pad = opts.padding ?? 8;
+  const r   = opts.radius  ?? 10;
+  const maxW= opts.maxWidth ?? Math.min(280, canvas.width * 0.22);
+  const lineH = opts.lineHeight ?? 16;
+
+  ctx.save();
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+
+  const lines = wrapLines(ctx, text, maxW);
+  const contentW = Math.max(24, ...lines.map(s => ctx.measureText(s).width));
+  const w = Math.min(maxW, contentW) + pad*2;
+  const h = lines.length * lineH + pad*2;
+
+  // Adjust x if panel is on the right side (x is the anchor edge)
+  const rectX = (side === 'right') ? x : x - w;
+  const rectY = y;
+
+  // Background
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(5,12,24,0.72)';
+  roundRectPath(ctx, rectX, rectY, w, h, r);
+  ctx.fill();
+
+  // Text
+  ctx.fillStyle = '#f6f7fb';
+  let ty = rectY + pad;
+  for (const s of lines){
+    ctx.fillText(s, rectX + pad, ty);
+    ty += lineH;
+  }
+  ctx.restore();
+
+  return { x: rectX, y: rectY, w, h };
+}
+
+// ---- point-in-rect
+function ptInRect(px, py, R){ return !!R && px >= R.x && px <= R.x + R.w && py >= R.y && py <= R.y + R.h; }
+
+/* =======================
+   Sprites
+   ======================= */
+class Sheet {
+  constructor(img, frames, scale=1){ this.img=img; this.frames=frames; this.scale=scale; }
+  draw(view, t, x, y, flip=false){
+    const list = this.frames[view] || this.frames.side;
+    const idx  = Math.floor(t*8)%list.length;
+    const f = list[idx];
+    const w = f.w * (this.frames.scale ?? this.scale ?? 1);
+    const h = f.h * (this.frames.scale ?? this.scale ?? 1);
+    ctx.save();
+    ctx.translate(x, y);
+    if (flip) { ctx.scale(-1,1); }
+    ctx.drawImage(this.img, f.x, f.y, f.w, f.h, -w/2, -h, w, h);
+    ctx.restore();
+    return {w,h};
+  }
+}
+
+let SPRITES = { bg:null, robot:null, human:null };
+
+/* =======================
+   Actor state machine
+   ======================= */
+class Actor {
+  constructor(kind, userLabel, rawUser, wikiHost, title, startSide, startRow, target){
+    this.kind = kind;                   // 'robot' | 'human'
+    this.userLabel = userLabel;         // display string
+    this.rawUser = rawUser;             // for profile/contribs link
+    this.wikiHost = wikiHost;           // e.g., 'en.wikipedia.org'
+    this.title = title;
+
+    this.entrySide = startSide;         // -1 = left, +1 = right
+    this.exitSide  = -startSide;        // leave opposite side
+    this.floorY    = floorYForShelfRow(startRow);
+    this.target    = { x: target.x, y: target.y };
+
+    // Start just off-canvas on the correct floor
+    this.pos = { x: startSide===-1 ? -60 : canvas.width+60, y: this.floorY };
+    this.faceLeft = (startSide!==-1);
+
+    this.state = 'WALK_X';              // WALK_X → CLIMB_Y → EDIT → DESCEND_Y → EXIT
+    this.holdUntil = 0;
+
+    // per-frame hit areas for clicks
+    this.actorRect = null;
+    this.titleRect = null;
+  }
+
+  update(dt){
+    switch(this.state){
+      case 'WALK_X': {
+        const dx = this.target.x - this.pos.x;
+        this.faceLeft = (dx < 0);
+        this.pos.x += clamp(dx, -SPEEDS.walk*dt, SPEEDS.walk*dt);
+        if (Math.abs(dx) < 2){ this.state='CLIMB_Y'; }
+        break;
+      }
+      case 'CLIMB_Y': {
+        const dy = this.target.y - this.pos.y;
+        this.pos.y += clamp(dy, -SPEEDS.climb*dt, SPEEDS.climb*dt);
+        if (Math.abs(dy) < 2){
+          this.state='EDIT';
+          this.holdUntil = performance.now() + RULES.holdTimeMs;
+        }
+        break;
+      }
+      case 'EDIT': {
+        if (performance.now() >= this.holdUntil){ this.state='DESCEND_Y'; }
+        break;
+      }
+      case 'DESCEND_Y': {
+        const dy = this.floorY - this.pos.y;
+        this.pos.y += clamp(dy, -SPEEDS.climb*dt, SPEEDS.climb*dt);
+        if (Math.abs(dy) < 2){
+          this.state='EXIT';
+          this.faceLeft = (this.exitSide < 0);
+        }
+        break;
+      }
+      case 'EXIT': {
+        const dir = this.exitSide;
+        this.pos.x += dir * SPEEDS.exit * dt;
+        if (this.pos.x < -120 || this.pos.x > canvas.width+120){ this.done = true; }
+        break;
+      }
+    }
+  }
+
+  draw(t){
+    const sheet = (this.kind==='robot') ? SPRITES.robot : SPRITES.human;
+    let view = 'side';
+    if (this.state==='CLIMB_Y' || this.state==='DESCEND_Y') view = 'back';
+    if (this.state==='EDIT')    view = 'back'; // use 'front' if your sheet has it
+
+    // Stationary ladder behind actor while climbing/editing
+    if (this.state==='CLIMB_Y' || this.state==='DESCEND_Y' || this.state==='EDIT'){
+      drawLadderAnchored(this.target.x + OFFSETS[this.kind].x, this.floorY, this.target.y);
+    }
+
+    // Actor sprite + offsets
+    const xo = OFFSETS[this.kind].x, yo = OFFSETS[this.kind].y;
+    const {w,h} = sheet ? sheet.draw(view, t, this.pos.x + xo, this.pos.y + yo, !this.faceLeft)
+                        : drawFallback(this.pos.x + xo, this.pos.y + yo);
+
+    // Clickable bounds for the actor
+    this.actorRect = { x: this.pos.x + xo - w/2, y: this.pos.y + yo - h, w, h };
+
+    // Small name label
+    ctx.font = '12px ui-monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(240,250,255,.95)';
+    ctx.fillText(this.userLabel, this.pos.x + xo, this.pos.y + yo + 4);
+
+    // Article badge during EDIT, placed to the side of the actor
+    this.titleRect = null;
+    if (this.state==='EDIT'){
+      const side = this.faceLeft ? 'left' : 'right';
+      const gap  = 10;
+      const anchorX = (side === 'right')
+        ? (this.actorRect.x + this.actorRect.w + gap)
+        : (this.actorRect.x - gap);
+      const anchorY = this.actorRect.y + 16;
+      this.titleRect = drawTitleBadge(
+        this.title, anchorX, anchorY, side,
+        { maxWidth: Math.min(300, canvas.width*0.26), padding: 8, lineHeight: 16 }
+      );
+    }
+  }
+}
+
+
+/* vector fallbacks */
+function drawFallback(x,y){
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle = '#aef'; ctx.beginPath(); ctx.arc(0,-18,16,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ccd'; ctx.fillRect(-10,-18,20,28);
+  ctx.restore();
+  return {w:20,h:44};
+}
+function drawLadderAnchored(x, floorY, targetY){
+  const sideGap = OFFSETS.ladder.sideGap;
+  const top = targetY - OFFSETS.ladder.topHeadroom;
+  const bottom = floorY + 12;
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(180,120,60,.9)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(x - sideGap, top);    ctx.lineTo(x - sideGap, bottom);
+  ctx.moveTo(x + sideGap, top);    ctx.lineTo(x + sideGap, bottom);
+
+  const rungs = 6;
+  for (let i=0; i<=rungs; i++){
+    const yy = lerp(top, bottom - 8, i/rungs);
+    ctx.moveTo(x - sideGap, yy);   ctx.lineTo(x + sideGap, yy);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+
+/* =======================
+   Simulation
+   ======================= */
+const state = {
+  actors: [],
+  queue: []
+};
+
+function spawnActor({isBot, userLabel, rawUser, wikiHost, title}){
+  const slot = pickArticleSlot(title);
+  const side = (Math.random()<0.5) ? -1 : 1;
+  const actor = new Actor(
+    isBot ? 'robot' : 'human',
+    userLabel,
+    rawUser,
+    wikiHost,
+    title,
+    side,
+    slot.row,
+    {x:slot.x, y:slot.y}
+  );
+  if (state.actors.length < RULES.maxActors) state.actors.push(actor);
+  else state.queue.push(actor);
+}
+
+
+
+function step(dt){
+  // promote queued actors if space
+  while (state.actors.length < RULES.maxActors && state.queue.length){
+    state.actors.push(state.queue.shift());
+  }
+  // update & cull
+  for (const a of state.actors) a.update(dt);
+  for (let i=state.actors.length-1;i>=0;i--) if (state.actors[i].done) state.actors.splice(i,1);
+}
+
+function draw(t){
+  // bg
+  if (SPRITES.bg) ctx.drawImage(SPRITES.bg, 0, 0, canvas.width, canvas.height);
+  else { ctx.fillStyle='#1a203d'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+  // optional grid overlay to help alignment
+  if (document.getElementById('showGrid').checked) {
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let i=0; i<LOCATIONS.length; i++){
+      const R = LOCATIONS[i];
+      // outer (light)
+      ctx.strokeStyle='rgba(255,255,255,.10)';
+      ctx.strokeRect(R.x, R.y, R.w, R.h);
+      // inner usable area (brighter)
+      ctx.strokeStyle='rgba(255,255,255,.25)';
+      ctx.strokeRect(R.inner.x, R.inner.y, R.inner.w, R.inner.h);
+    }
+    ctx.restore();
+  }
+
+  // actors
+  const tt = performance.now()/1000;
+  for (const a of state.actors) a.draw(tt);
+}
+
+/* =======================
+   Main loop
+   ======================= */
+let last = performance.now();
+let paused = false;
+function loop(now){
+  const dt = Math.min(0.033, (now-last)/1000); last = now;
+  if (!paused){ step(dt); draw(now/1000); }
+  requestAnimationFrame(loop);
+}
+
+/* =======================
+   EventStreams hookup
+   ======================= */
+const statusEl = document.getElementById('status');
+const selProject = document.getElementById('project');
+const sampleNEl  = document.getElementById('sampleN');
+const onlyEditsEl= document.getElementById('onlyEdits');
+let es=null, counter=0;
+
+function connectStream(){
+  if (es) es.close();
+  statusEl.textContent='connecting…';
+  es = new EventSource('https://stream.wikimedia.org/v2/stream/recentchange');
+  es.onopen = ()=> statusEl.textContent='live';
+  es.onerror= ()=> statusEl.textContent='error / reconnecting…';
+  es.onmessage = (ev)=>{
+    let e; try{ e=JSON.parse(ev.data); } catch{ return; }
+    const N = Math.max(1, parseInt(sampleNEl.value||'8', 10));
+    if ((++counter % N) !== 0) return;
+
+    // project filter
+    const wantProject = selProject.value.trim();
+    if (wantProject && e.server_name !== wantProject) return;
+
+    // namespace filter
+    if (String(e.namespace) !== (RULES.namespace)) return;
+
+    // type filter
+    if (onlyEditsEl.checked && e.type !== 'edit') return;
+
+    const title = e.title || '(untitled)';
+    const rawUser = e.user || '—';
+    const userLabel = isIPUser(rawUser) ? '(IP)' : rawUser;
+    const isBot = e.bot === true;
+    const wikiHost = e.server_name || 'en.wikipedia.org';
+
+    spawnActor({ isBot, userLabel, rawUser, wikiHost, title });
+
+    // logLine(`[${e.wiki}] ${isBot?'🤖':'🧑'} ${user} → ${title}`);
+  };
+}
+
+document.getElementById('pause').addEventListener('click', ()=>{
+  paused = !paused;
+  document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+});
+
+// Reconnect on control changes
+[selProject, sampleNEl, onlyEditsEl].forEach(el=> el.addEventListener('change', connectStream));
+
+/* =======================
+   Boot
+   ======================= */
+(async function boot(){
+  // load images
+  try {
+    SPRITES.bg     = await loadImage(ASSETS.background.src);
+  } catch(e){ console.warn('Background failed to load'); }
+  try {
+    const rimg = await loadImage(ASSETS.robot.img.src);
+    SPRITES.robot = new Sheet(rimg, ASSETS.robot.frames, ASSETS.robot.frames.scale);
+  } catch(e){ console.warn('Robot sheet failed to load'); }
+  try {
+    const himg = await loadImage(ASSETS.human.img.src);
+    SPRITES.human = new Sheet(himg, ASSETS.human.frames, ASSETS.human.frames.scale);
+  } catch(e){ console.warn('Human sheet failed to load'); }
+
+  connectStream();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
