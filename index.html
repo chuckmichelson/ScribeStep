@@ -114,7 +114,6 @@ function getClickTarget(px,py){
   for (let i = state.actors.length - 1; i >= 0; i--){
     const a = state.actors[i];
     if (a.titleRect && ptInRect(px,py,a.titleRect)) return { kind:'article', actor:a };
-    if (a.actorRect && ptInRect(px,py,a.actorRect)) return { kind:'user', actor:a };
   }
   return null;
 }
@@ -132,12 +131,6 @@ canvas.addEventListener('click', (ev)=>{
   const a = tgt.actor;
   if (tgt.kind === 'article'){
     const url = `https://${a.wikiHost}/wiki/${encodeURIComponent(a.title.replace(/ /g,'_'))}`;
-    window.open(url, '_blank', 'noopener');
-  } else {
-    const u = a.rawUser;
-    const url = isIPUser(u)
-      ? `https://${a.wikiHost}/wiki/Special:Contributions/${encodeURIComponent(u)}`
-      : `https://${a.wikiHost}/wiki/User:${encodeURIComponent(u)}`;
     window.open(url, '_blank', 'noopener');
   }
 });
