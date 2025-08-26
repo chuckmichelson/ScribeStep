@@ -17,17 +17,17 @@
 <body>
 <div id="ui">
   <span class="pill" id="status">connecting…</span>
+
   <label>Project
     <select id="project">
       <option value="en.wikipedia.org" selected>en.wikipedia.org</option>
       <option value="">(all)</option>
     </select>
   </label>
-  <label>Sample 1/N <input id="sampleN" type="number" value="1" min="1" style="width:56px"></label>
-  <label><input id="onlyEdits" type="checkbox" checked> Only edits</label>
-  <label><input id="showGrid" type="checkbox"> Show grid</label>
-  <button id="pause">Pause</button>
+  <label><input id="hideNames" type="checkbox" checked> Hide usernames</label>
+  <!-- <button id="pause">Pause</button> -->
 </div>
+
 <br>
 <br>
 <br>
@@ -214,6 +214,59 @@ function isIPUser(u){
   return typeof u === 'string' && (/^\d{1,3}(\.\d{1,3}){3}$/.test(u) || u.includes(':'));
 }
 
+// wordlists for plausible names (short, readable)
+const WORDS = {
+  adj: ['Quiet','Gentle','Steady','Patient','Keen','Kind','Nimble','Careful','Bright','Calm','Soft','Clever','Mellow','Brisk','Warm'],
+  noun: ['Juniper','Ash','Cedar','Maple','Willow','Sage','Laurel','Birch','Oak','Clover','Rowan','Iris','Ember','Quill','River']
+};
+
+// salt + rotation so names aren’t universally linkable
+const PSEUDO = {
+  salt: 'scribestep-v1',    // change if you want to rotate scheme
+  rotate: 'day'            // 'none' | 'day'
+};
+
+function dayKeyUTC(){
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+function pseudoFor(raw, isBot=false){
+  // stable within a rotation period, different across days (or set rotate:'none')
+  const basis = PSEUDO.salt + '|' + (PSEUDO.rotate==='day' ? dayKeyUTC() : '') + '|' + raw;
+  const h = hash32(basis);
+  const a = WORDS.adj[h % WORDS.adj.length];
+  const n = WORDS.noun[(h>>>8) % WORDS.noun.length];
+  const num = String((h>>>16) % 1000).padStart(3,'0');
+  if (isBot) return `Auto-Scribe #${num}`;
+  return `${a} ${n} #${num}`;
+}
+
+// function displayName(raw, isBot = false){
+//   // Bots keep their original names (regardless of anonymize toggle)
+//   if (isBot) return raw;
+
+//   const anon = document.getElementById('anonNames').checked;
+
+//   // When anonymization is OFF: show raw username; collapse IPs to "(IP)"
+//   if (!anon) return isIPUser(raw) ? '(IP)' : raw;
+
+//   // When anonymization is ON:
+//   if (isIPUser(raw)) {
+//     // Deterministic, non-reversible label for IP editors
+//     return `Anon Scribe #${String(hash32('ip|' + raw) % 10000).padStart(4,'0')}`;
+//   }
+//   // Pseudonym for registered humans
+//   return pseudoFor(raw, false);
+// }
+
+function displayName(raw){
+  const hide = document.getElementById('hideNames').checked;
+  if (hide) return '';                    // hide all usernames (including bots & IPs)
+  return isIPUser(raw) ? '(IP)' : raw;    // when shown, collapse IPs to a generic label
+}
+
+
 /* =======================
    Layout calculations
    ======================= */
@@ -368,26 +421,19 @@ let SPRITES = { bg:null, robot:null, human:null };
    Actor state machine
    ======================= */
 class Actor {
-  constructor(kind, userLabel, rawUser, wikiHost, title, startSide, startRow, target){
+  constructor(kind, rawUser, wikiHost, title, startSide, startRow, target){
     this.kind = kind;                   // 'robot' | 'human'
-    this.userLabel = userLabel;         // display string
-    this.rawUser = rawUser;             // for profile/contribs link
+    this.rawUser = rawUser;             // store raw; anonymize at draw-time
     this.wikiHost = wikiHost;           // e.g., 'en.wikipedia.org'
     this.title = title;
-
     this.entrySide = startSide;         // -1 = left, +1 = right
     this.exitSide  = -startSide;        // leave opposite side
     this.floorY    = floorYForShelfRow(startRow);
     this.target    = { x: target.x, y: target.y };
-
-    // Start just off-canvas on the correct floor
     this.pos = { x: startSide===-1 ? -60 : canvas.width+60, y: this.floorY };
     this.faceLeft = (startSide!==-1);
-
     this.state = 'WALK_X';              // WALK_X → CLIMB_Y → EDIT → DESCEND_Y → EXIT
     this.holdUntil = 0;
-
-    // per-frame hit areas for clicks
     this.actorRect = null;
     this.titleRect = null;
   }
@@ -456,7 +502,8 @@ class Actor {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(240,250,255,.95)';
-    ctx.fillText(this.userLabel, this.pos.x + xo, this.pos.y + yo + 4);
+    const isBot = (this.kind === 'robot');
+    ctx.fillText(displayName(this.rawUser, isBot), this.pos.x, this.pos.y + 4);
 
     // Article badge during EDIT, placed to the side of the actor
     this.titleRect = null;
@@ -514,22 +561,22 @@ const state = {
   queue: []
 };
 
-function spawnActor({isBot, userLabel, rawUser, wikiHost, title}){
+function spawnActor({ isBot, rawUser, wikiHost, title }){
   const slot = pickArticleSlot(title);
   const side = (Math.random()<0.5) ? -1 : 1;
   const actor = new Actor(
     isBot ? 'robot' : 'human',
-    userLabel,
     rawUser,
     wikiHost,
     title,
     side,
     slot.row,
-    {x:slot.x, y:slot.y}
+    { x: slot.x, y: slot.y }
   );
   if (state.actors.length < RULES.maxActors) state.actors.push(actor);
   else state.queue.push(actor);
 }
+
 
 
 
@@ -548,20 +595,20 @@ function draw(t){
   if (SPRITES.bg) ctx.drawImage(SPRITES.bg, 0, 0, canvas.width, canvas.height);
   else { ctx.fillStyle='#1a203d'; ctx.fillRect(0,0,canvas.width,canvas.height); }
   // optional grid overlay to help alignment
-  if (document.getElementById('showGrid').checked) {
-    ctx.save();
-    ctx.lineWidth = 1;
-    for (let i=0; i<LOCATIONS.length; i++){
-      const R = LOCATIONS[i];
-      // outer (light)
-      ctx.strokeStyle='rgba(255,255,255,.10)';
-      ctx.strokeRect(R.x, R.y, R.w, R.h);
-      // inner usable area (brighter)
-      ctx.strokeStyle='rgba(255,255,255,.25)';
-      ctx.strokeRect(R.inner.x, R.inner.y, R.inner.w, R.inner.h);
-    }
-    ctx.restore();
-  }
+  // if (document.getElementById('showGrid').checked) {
+  //   ctx.save();
+  //   ctx.lineWidth = 1;
+  //   for (let i=0; i<LOCATIONS.length; i++){
+  //     const R = LOCATIONS[i];
+  //     // outer (light)
+  //     ctx.strokeStyle='rgba(255,255,255,.10)';
+  //     ctx.strokeRect(R.x, R.y, R.w, R.h);
+  //     // inner usable area (brighter)
+  //     ctx.strokeStyle='rgba(255,255,255,.25)';
+  //     ctx.strokeRect(R.inner.x, R.inner.y, R.inner.w, R.inner.h);
+  //   }
+  //   ctx.restore();
+  // }
 
   // actors
   const tt = performance.now()/1000;
@@ -596,8 +643,6 @@ function connectStream(){
   es.onerror= ()=> statusEl.textContent='error / reconnecting…';
   es.onmessage = (ev)=>{
     let e; try{ e=JSON.parse(ev.data); } catch{ return; }
-    const N = Math.max(1, parseInt(sampleNEl.value||'8', 10));
-    if ((++counter % N) !== 0) return;
 
     // project filter
     const wantProject = selProject.value.trim();
@@ -606,28 +651,25 @@ function connectStream(){
     // namespace filter
     if (String(e.namespace) !== (RULES.namespace)) return;
 
-    // type filter
-    if (onlyEditsEl.checked && e.type !== 'edit') return;
-
-    const title = e.title || '(untitled)';
+    const title   = e.title || '(untitled)';
     const rawUser = e.user || '—';
-    const userLabel = isIPUser(rawUser) ? '(IP)' : rawUser;
-    const isBot = e.bot === true;
-    const wikiHost = e.server_name || 'en.wikipedia.org';
+    const wikiHost= e.server_name || 'en.wikipedia.org';
+    const isBot   = e.bot === true;
 
-    spawnActor({ isBot, userLabel, rawUser, wikiHost, title });
+    spawnActor({ isBot, rawUser, wikiHost, title });
 
-    // logLine(`[${e.wiki}] ${isBot?'🤖':'🧑'} ${user} → ${title}`);
+    const nameForLog = displayName(rawUser, isBot);
+    // logLine(`[${e.wiki}] ${isBot ? '🤖' : '🧑'} ${nameForLog} → ${title}`);
   };
 }
 
-document.getElementById('pause').addEventListener('click', ()=>{
-  paused = !paused;
-  document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
-});
+// document.getElementById('pause').addEventListener('click', ()=>{
+//   paused = !paused;
+//   document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+// });
 
 // Reconnect on control changes
-[selProject, sampleNEl, onlyEditsEl].forEach(el=> el.addEventListener('change', connectStream));
+[selProject].forEach(el => el.addEventListener('change', connectStream));
 
 /* =======================
    Boot
