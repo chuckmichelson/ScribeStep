@@ -32,9 +32,10 @@
   }
   #ui>*{font:12px system-ui}
   .pill{padding:2px 6px;border-radius:999px;background:#203060;color:#cfe}
-
-  /* (Optional) If you keep a log panel later */
-  /* Note: 'position:centered' is not valid CSS */
+  #ui select{
+    background:#222; color:#e9ecf5; border:1px solid #444; border-radius:8px;
+    padding:4px 8px;
+  }
   /* #log{position:fixed; left:50%; transform:translateX(-50%); bottom:8px; ...} */
 </style>
 
@@ -44,9 +45,7 @@
   <div id="ui" role="toolbar" aria-label="Controls">
     <span class="pill" id="status">connecting…</span>
     <label>Project
-      <select id="project">
-        <option value="en.wikipedia.org" selected>en.wikipedia.org</option>
-        <option value="">(all)</option>
+      <select id="language">
       </select>
     </label>
   </div>
@@ -54,6 +53,63 @@
 <!-- <pre id="log"></pre> -->
 
 <script>
+  // Autonyms first; English fallback
+  const LANGUAGES = [
+    { code:'en',  domain:'en.wikipedia.org',  autonym:'English',         english:'English' },
+    { code:'simple',domain:'simple.wikipedia.org', autonym:'Simple English', english:'Simple English' },
+    { code:'es',  domain:'es.wikipedia.org',  autonym:'Español',         english:'Spanish' },
+    { code:'fr',  domain:'fr.wikipedia.org',  autonym:'Français',        english:'French' },
+    { code:'de',  domain:'de.wikipedia.org',  autonym:'Deutsch',         english:'German' },
+    { code:'it',  domain:'it.wikipedia.org',  autonym:'Italiano',        english:'Italian' },
+    { code:'pt',  domain:'pt.wikipedia.org',  autonym:'Português',       english:'Portuguese' },
+    { code:'ru',  domain:'ru.wikipedia.org',  autonym:'Русский',         english:'Russian' },
+    { code:'zh',  domain:'zh.wikipedia.org',  autonym:'中文',            english:'Chinese' },
+    { code:'ja',  domain:'ja.wikipedia.org',  autonym:'日本語',          english:'Japanese' },
+    { code:'ko',  domain:'ko.wikipedia.org',  autonym:'한국어',          english:'Korean' },
+    { code:'ar',  domain:'ar.wikipedia.org',  autonym:'العربية',        english:'Arabic' },
+    { code:'he',  domain:'he.wikipedia.org',  autonym:'עברית',          english:'Hebrew' },
+    { code:'hi',  domain:'hi.wikipedia.org',  autonym:'हिन्दी',         english:'Hindi' },
+    { code:'bn',  domain:'bn.wikipedia.org',  autonym:'বাংলা',          english:'Bengali' },
+    { code:'tr',  domain:'tr.wikipedia.org',  autonym:'Türkçe',         english:'Turkish' },
+    { code:'vi',  domain:'vi.wikipedia.org',  autonym:'Tiếng Việt',     english:'Vietnamese' },
+    { code:'fa',  domain:'fa.wikipedia.org',  autonym:'فارسی',          english:'Persian' },
+    { code:'pl',  domain:'pl.wikipedia.org',  autonym:'Polski',          english:'Polish' },
+    { code:'nl',  domain:'nl.wikipedia.org',  autonym:'Nederlands',      english:'Dutch' },
+    { code:'sv',  domain:'sv.wikipedia.org',  autonym:'Svenska',         english:'Swedish' },
+    { code:'nb',  domain:'no.wikipedia.org',  autonym:'Norsk bokmål',    english:'Norwegian Bokmål' },
+    { code:'da',  domain:'da.wikipedia.org',  autonym:'Dansk',           english:'Danish' },
+    { code:'fi',  domain:'fi.wikipedia.org',  autonym:'Suomi',           english:'Finnish' },
+    { code:'cs',  domain:'cs.wikipedia.org',  autonym:'Čeština',         english:'Czech' },
+    { code:'el',  domain:'el.wikipedia.org',  autonym:'Ελληνικά',        english:'Greek' },
+    { code:'th',  domain:'th.wikipedia.org',  autonym:'ไทย',            english:'Thai' },
+    { code:'id',  domain:'id.wikipedia.org',  autonym:'Bahasa Indonesia',english:'Indonesian' },
+    { code:'uk',  domain:'uk.wikipedia.org',  autonym:'Українська',      english:'Ukrainian' },
+    { code:'ro',  domain:'ro.wikipedia.org',  autonym:'Română',          english:'Romanian' },
+    { code:'eo',  domain:'eo.wikipedia.org',  autonym:'Esperanto',       english:'Esperanto' },
+  ];
+
+  // Populate dropdown with autonyms (fallback to English)
+  const langSelect = document.getElementById('language');
+  LANGUAGES.forEach(({ code, domain, autonym, english }) => {
+    const opt = document.createElement('option');
+    opt.value = domain;                          // '' means “all”
+    opt.textContent = autonym || english;
+    if (code) opt.lang = code;                   // helps shaping for some scripts
+    langSelect.appendChild(opt);
+  });
+
+  // Default to English project
+  langSelect.value = 'en.wikipedia.org';
+
+  // Wire into your existing “project” handling:
+  function setProjectDomain(domain){
+    // Example: update your EventStreams connection / state here
+    state.projectDomain = domain; // or however you store it
+    // reconnect / resubscribe as needed...
+  }
+
+  langSelect.addEventListener('change', e => setProjectDomain(e.target.value));
+
 /* =======================
    CONFIG: assets & grid
    ======================= */
@@ -70,7 +126,8 @@ const lingeringBadges = []; // {text, url, x, y, t0}
 
 const ASSETS = {
   background: { src: 'fantasy_library.png' },   // <-- set to your background
-  outdoors: { src: 'fantasy_outdoors.png' },   // <-- set to your background
+  outdoors: { src: 'fantasy_outdoors.png' },   // <-- set to your background 
+  newuseroverlay: { src: 'fantasy_library_newuser.png' },
   // Robot sprite sheet (your cute bot)
   robot: {
     img: { src: 'robot_sprite_sheet.png' },
@@ -80,16 +137,6 @@ const ASSETS = {
       scale: 0.18
     }
   },
-  // Human Wikipedian sprite sheet (your elf librarian)
-  // human: {
-  //   img: { src: 'wikipedian_sprite_sheet.png' },   // <-- set to your human sheet
-  //   frames: {
-  //     // widths sum to 883: 221 + 221 + 221 + 220
-  //     side:  [ {x:   0, y:0, w:221, h:461}, {x: 221, y:0, w:221, h:461} ],
-  //     back:  [ {x: 442, y:0, w:221, h:461}, {x: 663, y:0, w:221, h:461} ], // duplicate for a 2-frame loop
-  //     scale: 0.2
-  //   }
-  // },
   human: {
     img: { src: 'wikipedian_sprite_sheet.png' },   // <-- set to your human sheet
     frames: {
@@ -109,6 +156,9 @@ const ASSETS = {
       scale: 0.17
     }
   },};
+
+
+
 
 // Canvas/grid target geometry (tweak to align with background shelves)
 const GRID = {
@@ -221,6 +271,12 @@ function loadImage(src){
     img.onerror = rej;
     img.src = src;
   });
+}
+
+function isNewUserEvent(e){
+  // Wikimedia RC: account creations arrive as log events
+  // type: "log", log_type: "newusers", log_action: "create" | "autocreate"
+  return e && e.type === 'log' && e.log_type === 'newusers' && (e.log_action === 'create' || e.log_action === 'autocreate');
 }
 
 // Simple hash → 32-bit int (for deterministic shelf placement per title)
@@ -449,7 +505,7 @@ let SPRITES = { bg:null, robot:null, human:null };
    Actor state machine
    ======================= */
 class Actor {
-  constructor(kind, rawUser, wikiHost, title, startSide, startRow, target){
+  constructor(kind, rawUser, wikiHost, title, startSide, startRow, target, opts = {}){
     this.kind = kind;                   // 'robot' | 'human'
     this.rawUser = rawUser;             // store raw; anonymize at draw-time
     this.wikiHost = wikiHost;           // e.g., 'en.wikipedia.org'
@@ -464,10 +520,39 @@ class Actor {
     this.holdUntil = 0;
     this.actorRect = null;
     this.titleRect = null;
+    this.isNewUser = !!opts.isNewUser;
+    // this.isNewUser = true;
+    // NEW: for new users, always start offscreen left → head right
+    const startX = (this.isNewUser ? -120 : (startSide===-1 ? -60 : canvas.width+60));
+    this.pos = { x: startX, y: this.floorY };
+    this.state = this.isNewUser ? 'GROUND_WALK' : 'WALK_X';
+    this.newUserCalloutShown = false;   // becomes true after first trigger
+    this.calloutT0 = 0;                 // animation start time
+    this.calloutMs = 1500;              // how long the “New User!” floats/fades
   }
 
   update(dt){
     switch(this.state){
+    // ----------------- NEW: Ground-floor new-user path -----------------
+      case 'GROUND_WALK': {
+        // Always move right at walk speed on the floor line
+        this.faceLeft = false;
+        this.pos.y = this.floorY;
+        this.pos.x += SPEEDS.walk * dt;
+
+        // Trigger callout once when crossing the midpoint
+        const mid = canvas.width * 0.5;
+        if (!this.newUserCalloutShown && this.pos.x >= mid){
+          this.newUserCalloutShown = true;
+          this.calloutT0 = performance.now();
+        }
+
+        // Leave screen right → done
+        if (this.pos.x > canvas.width + 120){
+          this.done = true;
+        }
+        break;
+      }
       case 'WALK_X': {
         const dx = this.target.x - this.pos.x;
         this.faceLeft = (dx < 0);
@@ -508,24 +593,40 @@ class Actor {
 
   draw(t){
     const sheet = (this.kind==='robot') ? SPRITES.robot : SPRITES.human;
-    let view = 'side';
-    if (this.state==='CLIMB_Y' || this.state==='DESCEND_Y') view = 'back';
-    if (this.state==='EDIT')    view = 'back'; // use 'front' if your sheet has it
 
-    // Stationary ladder behind actor while climbing/editing
-    if (this.state==='CLIMB_Y' || this.state==='DESCEND_Y' || this.state==='EDIT'){
+    let view = 'side';
+    if (!this.isNewUser){
+      if (this.state==='CLIMB_Y' || this.state==='DESCEND_Y') view = 'back';
+      if (this.state==='EDIT')    view = 'back';
+    }
+
+    // Stationary ladder (skip for new users)
+    if (!this.isNewUser && (this.state==='CLIMB_Y' || this.state==='DESCEND_Y' || this.state==='EDIT')){
       drawLadderAnchored(this.target.x + OFFSETS[this.kind].x, this.floorY, this.target.y);
     }
 
-    // Actor sprite + offsets
     const xo = OFFSETS[this.kind].x, yo = OFFSETS[this.kind].y;
+
+    // ----------------- NEW: glow for new users -----------------
+    if (this.isNewUser){
+      ctx.save();
+      ctx.shadowColor = 'rgba(255, 220, 0, 0.9)'; // bright yellow
+      ctx.shadowBlur = 25;                         // adjust softness
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+    }
+
     const {w,h} = sheet ? sheet.draw(view, t, this.pos.x + xo, this.pos.y + yo, !this.faceLeft)
                         : drawFallback(this.pos.x + xo, this.pos.y + yo);
 
-    // Clickable bounds for the actor
+    if (this.isNewUser){
+      ctx.restore(); // remove glow so labels/badges don’t inherit it
+    }
+    // ------------------------------------------------------------
+
     this.actorRect = { x: this.pos.x + xo - w/2, y: this.pos.y + yo - h, w, h };
 
-    // Small name label
+    // Small name label (still respects displayName() = '' to hide)
     ctx.font = '12px ui-monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -533,9 +634,9 @@ class Actor {
     const isBot = (this.kind === 'robot');
     ctx.fillText(displayName(this.rawUser, isBot), this.pos.x, this.pos.y + 4);
 
-    // Article badge during EDIT, placed to the side of the actor
+    // Article badge only during shelf EDIT
     this.titleRect = null;
-    if (this.state==='EDIT'){
+    if (!this.isNewUser && this.state==='EDIT'){
       const side = this.faceLeft ? 'left' : 'right';
       const gap  = 10;
       const anchorX = (side === 'right')
@@ -547,7 +648,49 @@ class Actor {
         { maxWidth: Math.min(300, canvas.width*0.26), padding: 8, lineHeight: 16 }
       );
     }
+
+    // ----------------- NEW: floating “New User!” callout -----------------
+    if (this.isNewUser && this.newUserCalloutShown){
+      const elapsed = performance.now() - this.calloutT0;
+      const tNorm = Math.min(1, Math.max(0, elapsed / this.calloutMs));
+      // ease-out (quadratic)
+      const ease = 1 - (1 - tNorm) * (1 - tNorm);
+      const floatPx = 24;                      // upward drift
+      const y = this.actorRect.y - 10 - ease * floatPx;
+      const alpha = 1 - tNorm;                 // fade out
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      // // Optional: if you want to use the overlay image, draw it just above head:
+      // if (SPRITES.nuover){
+      //   const ow = SPRITES.nuover.width * 0.25;
+      //   const oh = SPRITES.nuover.height * 0.25;
+      //   ctx.drawImage(SPRITES.nuover, this.pos.x - ow/2, y - oh - 6, ow, oh);
+      // }
+
+      // Text badge (compact)
+      ctx.font = 'bold 14px ui-monospace, SFMono-Regular, Menlo, monospace';
+      const text = 'New User!';
+      const pad  = 6;
+      const tw   = ctx.measureText(text).width;
+      const bw   = tw + pad*2;
+      const bh   = 20 + pad*2;
+
+      // dark pill behind text
+      ctx.fillStyle = 'rgba(255, 220, 0, 0.9)';
+      roundRectPath(ctx, this.pos.x - bw/2, y - bh, bw, bh, 10);
+      ctx.fill();
+
+      // text
+      ctx.fillStyle = '#222';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, this.pos.x, y - bh/2);
+      ctx.restore();
+    }
   }
+
 }
 
 
@@ -605,6 +748,30 @@ function spawnActor({ isBot, rawUser, wikiHost, title }){
   else state.queue.push(actor);
 }
 
+function spawnNewUser({ rawUser, wikiHost }){
+  // Always start at LEFT, walk to RIGHT, on ground floor (row = 3)
+  const startSide = -1;
+  const groundRow = 3;
+  const yFloor    = floorYForShelfRow(groundRow);
+
+  // We’ll set a simple “target” X far to the right; Y is the floor line
+  const targetX = canvas.width + 120;
+  const targetY = yFloor;
+
+  const actor = new Actor(
+    'human',                 // use human sheet (or robot if you prefer)
+    rawUser,
+    wikiHost,
+    '(new user)',            // no article title involved
+    startSide,
+    groundRow,
+    { x: targetX, y: targetY },
+    { isNewUser: true }      // <-- extra flags/options
+  );
+
+  if (state.actors.length < RULES.maxActors) state.actors.push(actor);
+  else state.queue.push(actor);
+}
 
 
 
@@ -631,6 +798,10 @@ function draw(t){
   // actors
   const tt = performance.now() / 1000;
   for (const a of state.actors) a.draw(tt);
+
+  // new user overlay
+  ctx.drawImage(SPRITES.nuover, 0, 0, canvas.width, canvas.height);
+
 }
 
 
@@ -649,7 +820,7 @@ function loop(now){
    EventStreams hookup
    ======================= */
 const statusEl = document.getElementById('status');
-const selProject = document.getElementById('project');
+const selProject = document.getElementById('language');
 const sampleNEl  = document.getElementById('sampleN');
 const onlyEditsEl= document.getElementById('onlyEdits');
 let es=null, counter=0;
@@ -661,15 +832,24 @@ function connectStream(){
   es.onopen = ()=> statusEl.textContent='live';
   es.onerror= ()=> statusEl.textContent='error / reconnecting…';
   es.onmessage = (ev)=>{
-    let e; try{ e=JSON.parse(ev.data); } catch{ return; }
+    let e; try{ e = JSON.parse(ev.data); } catch{ return; }
 
     // project filter
     const wantProject = selProject.value.trim();
     if (wantProject && e.server_name !== wantProject) return;
 
-    // namespace filter
+    // If it’s a NEW-USER event, spawn ground-floor walker and bail early
+    if (isNewUserEvent(e)){
+      const rawUser = e.user || '(new user)';
+      const wikiHost = e.server_name || 'en.wikipedia.org';
+      spawnNewUser({ rawUser, wikiHost });
+      return;
+    }
+
+    // namespace filter for edits only
     if (String(e.namespace) !== (RULES.namespace)) return;
 
+    // Normal edit → shelf runner
     const title   = e.title || '(untitled)';
     const rawUser = e.user || '—';
     const wikiHost= e.server_name || 'en.wikipedia.org';
@@ -677,17 +857,13 @@ function connectStream(){
 
     spawnActor({ isBot, rawUser, wikiHost, title });
 
-    const nameForLog = displayName(rawUser, isBot);
+    // const nameForLog = displayName(rawUser, isBot);
     // logLine(`[${e.wiki}] ${isBot ? '🤖' : '🧑'} ${nameForLog} → ${title}`);
   };
+
 }
 
-// document.getElementById('pause').addEventListener('click', ()=>{
-//   paused = !paused;
-//   document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
-// });
-
-// Reconnect on control changes
+// // Reconnect on control changes
 [selProject].forEach(el => el.addEventListener('change', connectStream));
 
 /* =======================
@@ -709,6 +885,9 @@ function connectStream(){
     const himg = await loadImage(ASSETS.human.img.src);
     SPRITES.human = new Sheet(himg, ASSETS.human.frames, ASSETS.human.frames.scale);
   } catch(e){ console.warn('Human sheet failed to load'); }
+  try {
+    SPRITES.nuover = await loadImage(ASSETS.newuseroverlay.src);
+  } catch(e){ console.warn('New user overlay failed to load'); }
 
   connectStream();
   requestAnimationFrame(loop);
