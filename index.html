@@ -4,34 +4,53 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>WikiLibrary Live</title>
 <style>
-  html,body{margin:0;height:100%;background:#222;color:#e9ecf5;font:14px/1.3 system-ui}
-  #ui{position:fixed;inset:0 0 auto 0;display:flex;gap:12px;align-items:center;
-      padding:8px 12px;background:rgba(10,16,36,.8);backdrop-filter:blur(6px);z-index:10}
+  html,body{
+    margin:0;height:100%;
+    background:#222;color:#e9ecf5;font:14px/1.3 system-ui;
+  }
+
+  /* Center canvas + UI horizontally, stacked vertically */
+  body{
+    display:flex; flex-direction:column; align-items:center;
+    padding:12px;
+  }
+
+  canvas{
+    display:block; max-width:100vw; height:auto; background:#000;
+  }
+
+  /* Centered, compact toolbar under the canvas */
+  #ui{
+    display:inline-flex;            /* shrink to content */
+    align-items:center; gap:12px;
+    padding:8px 12px;
+    margin:12px auto 0;             /* center the bar */
+    background:#222;                /* requested UI background */
+    border:1px solid #333;
+    border-radius:12px;
+    box-shadow:0 6px 18px rgba(0,0,0,.35);
+  }
   #ui>*{font:12px system-ui}
-  #log{position:fixed;right:8px;bottom:8px;max-width:40ch;max-height:40vh;overflow:auto;
-       font:12px ui-monospace, SFMono-Regular, Menlo, monospace;color:#bcd}
-  canvas{display:block;margin:0 auto;max-width:100vw;height:auto;background:#000}
   .pill{padding:2px 6px;border-radius:999px;background:#203060;color:#cfe}
+
+  /* (Optional) If you keep a log panel later */
+  /* Note: 'position:centered' is not valid CSS */
+  /* #log{position:fixed; left:50%; transform:translateX(-50%); bottom:8px; ...} */
 </style>
 
 <body>
-<div id="ui">
-  <span class="pill" id="status">connecting…</span>
+  <canvas id="c" width="1538" height="855"></canvas>
 
-  <label>Project
-    <select id="project">
-      <option value="en.wikipedia.org" selected>en.wikipedia.org</option>
-      <option value="">(all)</option>
-    </select>
-  </label>
-  <label><input id="hideNames" type="checkbox" checked> Hide usernames</label>
-  <!-- <button id="pause">Pause</button> -->
-</div>
+  <div id="ui" role="toolbar" aria-label="Controls">
+    <span class="pill" id="status">connecting…</span>
+    <label>Project
+      <select id="project">
+        <option value="en.wikipedia.org" selected>en.wikipedia.org</option>
+        <option value="">(all)</option>
+      </select>
+    </label>
+  </div>
 
-<br>
-<br>
-<br>
-<canvas id="c" width="1538" height="855"></canvas>
 <!-- <pre id="log"></pre> -->
 
 <script>
@@ -50,14 +69,15 @@ const ARTICLE_BADGE_MS = 4000;
 const lingeringBadges = []; // {text, url, x, y, t0}
 
 const ASSETS = {
-  background: { src: 'fantasy_library_bg.png' },   // <-- set to your background
+  background: { src: 'fantasy_library.png' },   // <-- set to your background
+  outdoors: { src: 'fantasy_outdoors.png' },   // <-- set to your background
   // Robot sprite sheet (your cute bot)
   robot: {
     img: { src: 'robot_sprite_sheet.png' },
     frames: {
       back: [ {x: 0,   y:0, w:221, h:277}, {x:221, y:0, w:221, h:277} ],
       side: [ {x: 442, y:0, w:221, h:277}, {x:663, y:0, w:220, h:277} ],
-      scale: 0.2
+      scale: 0.18
     }
   },
   // Human Wikipedian sprite sheet (your elf librarian)
@@ -74,9 +94,9 @@ const ASSETS = {
     img: { src: 'wikipedian_sprite_sheet.png' },   // <-- set to your human sheet
     frames: {
       // widths sum to 883: 221 + 221 + 221 + 220
-      side:  [ {x:   0, y:0, w:320, h:811}, {x: 420, y:0, w:320, h:811} ],
+      side:  [ {x: 420, y:0, w:320, h:811}, {x:   0, y:0, w:320, h:811} ],
       back:  [ {x: 824, y:0, w:320, h:811}, {x: 1240, y:0, w:320, h:811} ], // duplicate for a 2-frame loop
-      scale: 0.12
+      scale: 0.10
     }
   },
   // Optional: tall ladder sprite (from your sheet); if omitted, we’ll draw a simple ladder
@@ -103,14 +123,14 @@ const GRID = {
 
 // Animation speeds (px/sec); tweak to taste
 const SPEEDS = {
-  walk: 100,
+  walk: 120,
   climb: 100,
   exit: 100
 };
 
 // Event stream sampling & rules
 const RULES = {
-  maxActors: 10,          // cap concurrent librarians
+  maxActors: 1000,          // cap concurrent librarians
   holdTimeMs: 3000,       // time to “edit” at shelf before exiting
   namespace: '0'          // article namespace
 };
@@ -155,7 +175,7 @@ canvas.addEventListener('click', (ev)=>{
 // Hard nudges so feet hit the floor line nicely and ladder sits right
 const OFFSETS = {
   robot: { x: 0, y: 0 },   // +y nudges down
-  human: { x: 0, y: 0 },
+  human: { x: 0, y: 4 },
   ladder: { x: -3, topHeadroom: 10, sideGap: 18 } // small tweaks for look
 };
 
@@ -177,7 +197,7 @@ const LOCATIONS = (() => {
   const cellH = innerH / ROWS;
 
   const rects = [];
-  for (let r=0; r<ROWS; r++){
+  for (let r=0; r<ROWS-1; r++){
     for (let c=0; c<COLS; c++){
       const x = margin.left + c*cellW;
       const y = margin.top  + r*cellH;
@@ -268,7 +288,8 @@ function pseudoFor(raw, isBot=false){
 // }
 
 function displayName(raw){
-  const hide = document.getElementById('hideNames').checked;
+  // const hide = document.getElementById('hideNames').checked;
+  const hide = true;
   if (hide) return '';                    // hide all usernames (including bots & IPs)
   return isIPUser(raw) ? '(IP)' : raw;    // when shown, collapse IPs to a generic label
 }
@@ -598,29 +619,20 @@ function step(dt){
 }
 
 function draw(t){
-  // bg
-  if (SPRITES.bg) ctx.drawImage(SPRITES.bg, 0, 0, canvas.width, canvas.height);
-  else { ctx.fillStyle='#1a203d'; ctx.fillRect(0,0,canvas.width,canvas.height); }
-  // optional grid overlay to help alignment
-  // if (document.getElementById('showGrid').checked) {
-  //   ctx.save();
-  //   ctx.lineWidth = 1;
-  //   for (let i=0; i<LOCATIONS.length; i++){
-  //     const R = LOCATIONS[i];
-  //     // outer (light)
-  //     ctx.strokeStyle='rgba(255,255,255,.10)';
-  //     ctx.strokeRect(R.x, R.y, R.w, R.h);
-  //     // inner usable area (brighter)
-  //     ctx.strokeStyle='rgba(255,255,255,.25)';
-  //     ctx.strokeRect(R.inner.x, R.inner.y, R.inner.w, R.inner.h);
-  //   }
-  //   ctx.restore();
-  // }
+  // clear the frame
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // overlay with transparency (railings, frames, etc.)
+  ctx.drawImage(SPRITES.out, 0, 0, canvas.width, canvas.height);
+
+  // base background
+  ctx.drawImage(SPRITES.bg, 0, 0, canvas.width, canvas.height);
 
   // actors
-  const tt = performance.now()/1000;
+  const tt = performance.now() / 1000;
   for (const a of state.actors) a.draw(tt);
 }
+
 
 /* =======================
    Main loop
@@ -684,7 +696,10 @@ function connectStream(){
 (async function boot(){
   // load images
   try {
-    SPRITES.bg     = await loadImage(ASSETS.background.src);
+    SPRITES.out = await loadImage(ASSETS.outdoors.src);
+  } catch(e){ console.warn('Outdoors failed to load'); }
+  try {
+    SPRITES.bg = await loadImage(ASSETS.background.src);
   } catch(e){ console.warn('Background failed to load'); }
   try {
     const rimg = await loadImage(ASSETS.robot.img.src);
